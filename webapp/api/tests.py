@@ -111,3 +111,149 @@ class PosCheckoutTests(TestCase):
         payload['lines'][0]['quantity'] = '20.00'
         response = self.client.post('/pos/sales/checkout/', payload, format='json')
         self.assertEqual(response.status_code, 400)
+
+
+class ServicesWorkflowTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant = models.Tenant.objects.create(name='Tenant Workflow', code='TW')
+        self.category = models.ProductCategory.objects.create(tenant=self.tenant, name='Raw Material')
+        self.component = models.Product.objects.create(
+            tenant=self.tenant,
+            sku='RM-1',
+            name='Raw Material 1',
+            category=self.category,
+            sale_price=Decimal('2.00'),
+        )
+        self.finished = models.Product.objects.create(
+            tenant=self.tenant,
+            sku='FG-1',
+            name='Finished Good 1',
+            category=self.category,
+            sale_price=Decimal('15.00'),
+        )
+        self.warehouse = models.Warehouse.objects.create(tenant=self.tenant, name='Central', code='CENT')
+        models.StockLevel.objects.create(
+            tenant=self.tenant,
+            warehouse=self.warehouse,
+            product=self.component,
+            quantity=Decimal('100.00'),
+        )
+        models.StockLevel.objects.create(
+            tenant=self.tenant,
+            warehouse=self.warehouse,
+            product=self.finished,
+            quantity=Decimal('0.00'),
+        )
+        self.vendor = models.Partner.objects.create(
+            tenant=self.tenant,
+            name='Vendor A',
+            partner_type=models.Partner.VENDOR,
+        )
+        self.customer = models.Partner.objects.create(
+            tenant=self.tenant,
+            name='Customer A',
+            partner_type=models.Partner.CUSTOMER,
+        )
+        self.account_1 = models.Account.objects.create(tenant=self.tenant, code='1000', name='Inventory')
+        self.account_2 = models.Account.objects.create(tenant=self.tenant, code='5000', name='COGS')
+
+    def test_stock_adjust_endpoint(self):
+        response = self.client.post('/stock-levels/adjust/?tenant_id=%s' % self.tenant.id, {
+            'warehouse': self.warehouse.id,
+            'product': self.finished.id,
+            'quantity_delta': '5.00',
+            'reference': 'ADJ-1',
+            'notes': 'Manual increment',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        stock = models.StockLevel.objects.get(tenant=self.tenant, warehouse=self.warehouse, product=self.finished)
+        self.assertEqual(stock.quantity, Decimal('5.00'))
+
+    def test_purchase_order_receive_endpoint(self):
+        po = models.PurchaseOrder.objects.create(
+            tenant=self.tenant,
+            po_number='PO-1',
+            vendor=self.vendor,
+            order_date='2026-01-01',
+        )
+        models.PurchaseOrderLine.objects.create(
+            tenant=self.tenant,
+            purchase_order=po,
+            product=self.finished,
+            quantity=Decimal('8.00'),
+            unit_price=Decimal('3.00'),
+        )
+        response = self.client.post('/purchase-orders/%s/receive/?tenant_id=%s' % (po.id, self.tenant.id), {
+            'warehouse': self.warehouse.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        po.refresh_from_db()
+        self.assertEqual(po.status, models.PurchaseOrder.RECEIVED)
+        stock = models.StockLevel.objects.get(tenant=self.tenant, warehouse=self.warehouse, product=self.finished)
+        self.assertEqual(stock.quantity, Decimal('8.00'))
+
+    def test_sales_order_deliver_endpoint(self):
+        models.StockLevel.objects.filter(
+            tenant=self.tenant,
+            warehouse=self.warehouse,
+            product=self.finished,
+        ).update(quantity=Decimal('10.00'))
+        so = models.SalesOrder.objects.create(
+            tenant=self.tenant,
+            so_number='SO-1',
+            customer=self.customer,
+            order_date='2026-01-01',
+        )
+        models.SalesOrderLine.objects.create(
+            tenant=self.tenant,
+            sales_order=so,
+            product=self.finished,
+            quantity=Decimal('4.00'),
+            unit_price=Decimal('20.00'),
+        )
+        response = self.client.post('/sales-orders/%s/deliver/?tenant_id=%s' % (so.id, self.tenant.id), {
+            'warehouse': self.warehouse.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        so.refresh_from_db()
+        self.assertEqual(so.status, models.SalesOrder.DELIVERED)
+        stock = models.StockLevel.objects.get(tenant=self.tenant, warehouse=self.warehouse, product=self.finished)
+        self.assertEqual(stock.quantity, Decimal('6.00'))
+
+    def test_manufacturing_output_endpoint(self):
+        models.BillOfMaterial.objects.create(
+            tenant=self.tenant,
+            product=self.finished,
+            component=self.component,
+            quantity=Decimal('2.00'),
+        )
+        mo = models.ManufacturingOrder.objects.create(
+            tenant=self.tenant,
+            mo_number='MO-1',
+            product=self.finished,
+            quantity=Decimal('5.00'),
+            status=models.ManufacturingOrder.IN_PROGRESS,
+        )
+
+        response = self.client.post('/manufacturing-orders/%s/record_output/?tenant_id=%s' % (mo.id, self.tenant.id), {
+            'warehouse': self.warehouse.id,
+            'output_quantity': '5.00',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        mo.refresh_from_db()
+        self.assertEqual(mo.status, models.ManufacturingOrder.DONE)
+
+        component_stock = models.StockLevel.objects.get(tenant=self.tenant, warehouse=self.warehouse, product=self.component)
+        finished_stock = models.StockLevel.objects.get(tenant=self.tenant, warehouse=self.warehouse, product=self.finished)
+        self.assertEqual(component_stock.quantity, Decimal('90.00'))
+        self.assertEqual(finished_stock.quantity, Decimal('5.00'))
+
+    def test_journal_post_inventory_endpoint(self):
+        response = self.client.post('/journal-entries/post_inventory/?tenant_id=%s' % self.tenant.id, {
+            'reference': 'INV-ADJ',
+            'amount': '125.50',
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(models.JournalLine.objects.filter(tenant=self.tenant).count(), 2)

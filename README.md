@@ -83,3 +83,12 @@ A production-ready ERP + POS architecture and scaffold has been added:
 Checkout is idempotent using `idempotency_key` payload field (or `Idempotency-Key` header),
 creates stock movements, updates stock levels with row locking, records payments,
 and creates outbox events for async processing.
+
+
+## Additional Service Endpoints
+
+- Stock adjustment: `POST /stock-levels/adjust/?tenant_id={tenant_id}`
+- Purchase receipt: `POST /purchase-orders/{id}/receive/?tenant_id={tenant_id}`
+- Sales delivery: `POST /sales-orders/{id}/deliver/?tenant_id={tenant_id}`
+- Manufacturing output: `POST /manufacturing-orders/{id}/record_output/?tenant_id={tenant_id}`
+- Inventory journal posting: `POST /journal-entries/post_inventory/?tenant_id={tenant_id}`

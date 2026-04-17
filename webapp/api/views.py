@@ -9,7 +9,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from webapp.api import models
 from webapp.api import serializers
-from webapp.api.services import PosService
+from webapp.api.services import (
+    PosService,
+    InventoryService,
+    ProcurementService,
+    ManufacturingService,
+    SalesService,
+    FinanceService,
+)
 
 
 class TenantScopedViewSet(viewsets.ModelViewSet):
@@ -72,6 +79,19 @@ class StockLevelViewSet(TenantScopedViewSet):
     queryset = models.StockLevel.objects.all().order_by('warehouse_id')
     serializer_class = serializers.StockLevelSerializer
 
+    @action(detail=False, methods=['post'])
+    def adjust(self, request):
+        tenant_id = self.get_tenant_id()
+        stock_level = InventoryService.adjust_stock(
+            tenant_id=tenant_id,
+            warehouse_id=request.data.get('warehouse'),
+            product_id=request.data.get('product'),
+            quantity_delta=request.data.get('quantity_delta'),
+            reference=request.data.get('reference', ''),
+            notes=request.data.get('notes', 'Manual adjustment'),
+        )
+        return Response(serializers.StockLevelSerializer(stock_level).data)
+
 
 class StockMovementViewSet(TenantScopedViewSet):
     queryset = models.StockMovement.objects.all().order_by('-created_at')
@@ -82,6 +102,16 @@ class PurchaseOrderViewSet(TenantScopedViewSet):
     queryset = models.PurchaseOrder.objects.all().order_by('-order_date')
     serializer_class = serializers.PurchaseOrderSerializer
 
+    @action(detail=True, methods=['post'])
+    def receive(self, request, pk=None):
+        tenant_id = self.get_tenant_id()
+        purchase_order = ProcurementService.receive_purchase_order(
+            tenant_id=tenant_id,
+            purchase_order_id=pk,
+            warehouse_id=request.data.get('warehouse'),
+        )
+        return Response(serializers.PurchaseOrderSerializer(purchase_order).data)
+
 
 class PurchaseOrderLineViewSet(TenantScopedViewSet):
     queryset = models.PurchaseOrderLine.objects.all().order_by('purchase_order_id')
@@ -91,6 +121,16 @@ class PurchaseOrderLineViewSet(TenantScopedViewSet):
 class SalesOrderViewSet(TenantScopedViewSet):
     queryset = models.SalesOrder.objects.all().order_by('-order_date')
     serializer_class = serializers.SalesOrderSerializer
+
+    @action(detail=True, methods=['post'])
+    def deliver(self, request, pk=None):
+        tenant_id = self.get_tenant_id()
+        sales_order = SalesService.deliver_sales_order(
+            tenant_id=tenant_id,
+            sales_order_id=pk,
+            warehouse_id=request.data.get('warehouse'),
+        )
+        return Response(serializers.SalesOrderSerializer(sales_order).data)
 
 
 class SalesOrderLineViewSet(TenantScopedViewSet):
@@ -106,6 +146,17 @@ class BillOfMaterialViewSet(TenantScopedViewSet):
 class ManufacturingOrderViewSet(TenantScopedViewSet):
     queryset = models.ManufacturingOrder.objects.all().order_by('-created_at')
     serializer_class = serializers.ManufacturingOrderSerializer
+
+    @action(detail=True, methods=['post'])
+    def record_output(self, request, pk=None):
+        tenant_id = self.get_tenant_id()
+        manufacturing_order = ManufacturingService.record_output(
+            tenant_id=tenant_id,
+            manufacturing_order_id=pk,
+            warehouse_id=request.data.get('warehouse'),
+            output_quantity=request.data.get('output_quantity'),
+        )
+        return Response(serializers.ManufacturingOrderSerializer(manufacturing_order).data)
 
 
 class EmployeeViewSet(TenantScopedViewSet):
@@ -126,6 +177,16 @@ class AccountViewSet(TenantScopedViewSet):
 class JournalEntryViewSet(TenantScopedViewSet):
     queryset = models.JournalEntry.objects.all().order_by('-posted_on')
     serializer_class = serializers.JournalEntrySerializer
+
+    @action(detail=False, methods=['post'])
+    def post_inventory(self, request):
+        tenant_id = self.get_tenant_id()
+        journal_entry = FinanceService.post_inventory_adjustment_journal(
+            tenant_id=tenant_id,
+            reference=request.data.get('reference', 'manual_adjustment'),
+            amount=request.data.get('amount'),
+        )
+        return Response(serializers.JournalEntrySerializer(journal_entry).data, status=status.HTTP_201_CREATED)
 
 
 class JournalLineViewSet(TenantScopedViewSet):

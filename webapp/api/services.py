@@ -12,6 +12,219 @@ from rest_framework.exceptions import ValidationError
 from webapp.api import models
 
 
+class InventoryService(object):
+
+    @staticmethod
+    @transaction.atomic
+    def adjust_stock(tenant_id, warehouse_id, product_id, quantity_delta, reference, notes):
+        quantity_delta = Decimal(str(quantity_delta))
+        tenant = models.Tenant.objects.get(id=tenant_id)
+        stock_level = models.StockLevel.objects.select_for_update().filter(
+            tenant_id=tenant_id,
+            warehouse_id=warehouse_id,
+            product_id=product_id,
+        ).first()
+        if not stock_level:
+            stock_level = models.StockLevel.objects.create(
+                tenant_id=tenant_id,
+                warehouse_id=warehouse_id,
+                product_id=product_id,
+                quantity=Decimal('0.00'),
+            )
+
+        new_qty = stock_level.quantity + quantity_delta
+        if (not tenant.allow_negative_stock) and new_qty < 0:
+            raise ValidationError('Stock adjustment would result in negative stock.')
+
+        stock_level.quantity = new_qty
+        stock_level.save(update_fields=['quantity'])
+
+        movement_type = models.StockMovement.IN if quantity_delta >= 0 else models.StockMovement.OUT
+        models.StockMovement.objects.create(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            warehouse_id=warehouse_id,
+            movement_type=movement_type,
+            quantity=abs(quantity_delta),
+            reference=reference,
+            notes=notes,
+        )
+        return stock_level
+
+
+class ProcurementService(object):
+
+    @staticmethod
+    @transaction.atomic
+    def receive_purchase_order(tenant_id, purchase_order_id, warehouse_id):
+        purchase_order = models.PurchaseOrder.objects.select_for_update().get(
+            id=purchase_order_id,
+            tenant_id=tenant_id,
+        )
+        if purchase_order.status == models.PurchaseOrder.RECEIVED:
+            raise ValidationError('Purchase order already received.')
+
+        lines = purchase_order.lines.select_related('product').all()
+        if not lines:
+            raise ValidationError('Purchase order does not contain lines.')
+
+        for line in lines:
+            InventoryService.adjust_stock(
+                tenant_id=tenant_id,
+                warehouse_id=warehouse_id,
+                product_id=line.product_id,
+                quantity_delta=line.quantity,
+                reference=purchase_order.po_number,
+                notes='PO receipt',
+            )
+
+        purchase_order.status = models.PurchaseOrder.RECEIVED
+        purchase_order.save(update_fields=['status'])
+
+        OutboxService.record_event(
+            tenant_id=tenant_id,
+            aggregate_type='purchase_order',
+            aggregate_id=purchase_order.id,
+            event_type='procurement.purchase_order.received',
+            payload={'purchase_order_id': purchase_order.id, 'warehouse_id': warehouse_id},
+        )
+        return purchase_order
+
+
+class SalesService(object):
+
+    @staticmethod
+    @transaction.atomic
+    def deliver_sales_order(tenant_id, sales_order_id, warehouse_id):
+        sales_order = models.SalesOrder.objects.select_for_update().get(id=sales_order_id, tenant_id=tenant_id)
+        if sales_order.status == models.SalesOrder.DELIVERED:
+            raise ValidationError('Sales order already delivered.')
+
+        lines = sales_order.lines.select_related('product').all()
+        if not lines:
+            raise ValidationError('Sales order does not contain lines.')
+
+        for line in lines:
+            InventoryService.adjust_stock(
+                tenant_id=tenant_id,
+                warehouse_id=warehouse_id,
+                product_id=line.product_id,
+                quantity_delta=Decimal('0.00') - line.quantity,
+                reference=sales_order.so_number,
+                notes='Sales order delivery',
+            )
+
+        sales_order.status = models.SalesOrder.DELIVERED
+        sales_order.save(update_fields=['status'])
+
+        OutboxService.record_event(
+            tenant_id=tenant_id,
+            aggregate_type='sales_order',
+            aggregate_id=sales_order.id,
+            event_type='sales.sales_order.delivered',
+            payload={'sales_order_id': sales_order.id, 'warehouse_id': warehouse_id},
+        )
+        return sales_order
+
+
+class ManufacturingService(object):
+
+    @staticmethod
+    @transaction.atomic
+    def record_output(tenant_id, manufacturing_order_id, warehouse_id, output_quantity):
+        manufacturing_order = models.ManufacturingOrder.objects.select_for_update().get(
+            id=manufacturing_order_id,
+            tenant_id=tenant_id,
+        )
+        output_quantity = Decimal(str(output_quantity))
+        if output_quantity <= 0:
+            raise ValidationError('Output quantity should be greater than zero.')
+
+        bom_lines = models.BillOfMaterial.objects.filter(
+            tenant_id=tenant_id,
+            product_id=manufacturing_order.product_id,
+        )
+        for bom_line in bom_lines:
+            required_component_qty = bom_line.quantity * output_quantity
+            InventoryService.adjust_stock(
+                tenant_id=tenant_id,
+                warehouse_id=warehouse_id,
+                product_id=bom_line.component_id,
+                quantity_delta=Decimal('0.00') - required_component_qty,
+                reference=manufacturing_order.mo_number,
+                notes='Manufacturing component consumption',
+            )
+
+        InventoryService.adjust_stock(
+            tenant_id=tenant_id,
+            warehouse_id=warehouse_id,
+            product_id=manufacturing_order.product_id,
+            quantity_delta=output_quantity,
+            reference=manufacturing_order.mo_number,
+            notes='Manufacturing output',
+        )
+
+        manufacturing_order.status = models.ManufacturingOrder.DONE
+        manufacturing_order.save(update_fields=['status'])
+
+        OutboxService.record_event(
+            tenant_id=tenant_id,
+            aggregate_type='manufacturing_order',
+            aggregate_id=manufacturing_order.id,
+            event_type='manufacturing.output.recorded',
+            payload={'manufacturing_order_id': manufacturing_order.id, 'output_quantity': str(output_quantity)},
+        )
+        return manufacturing_order
+
+
+class FinanceService(object):
+
+    @staticmethod
+    @transaction.atomic
+    def post_inventory_adjustment_journal(tenant_id, reference, amount):
+        amount = Decimal(str(amount))
+        entry = models.JournalEntry.objects.create(
+            tenant_id=tenant_id,
+            entry_number='JE-%s' % uuid.uuid4().hex[:10].upper(),
+            description='Auto posting for %s' % reference,
+            posted_on=timezone.now().date(),
+        )
+        debit_account = models.Account.objects.filter(tenant_id=tenant_id).order_by('id').first()
+        credit_account = models.Account.objects.filter(tenant_id=tenant_id).order_by('-id').first()
+        if not debit_account or not credit_account:
+            raise ValidationError('At least two accounts are required for journal posting.')
+
+        models.JournalLine.objects.create(
+            tenant_id=tenant_id,
+            journal_entry=entry,
+            account=debit_account,
+            debit=amount,
+            credit=Decimal('0.00'),
+        )
+        models.JournalLine.objects.create(
+            tenant_id=tenant_id,
+            journal_entry=entry,
+            account=credit_account,
+            debit=Decimal('0.00'),
+            credit=amount,
+        )
+        return entry
+
+
+class OutboxService(object):
+
+    @staticmethod
+    def record_event(tenant_id, aggregate_type, aggregate_id, event_type, payload):
+        models.OutboxEvent.objects.create(
+            tenant_id=tenant_id,
+            aggregate_type=aggregate_type,
+            aggregate_id=str(aggregate_id),
+            event_type=event_type,
+            payload=json.dumps(payload),
+            status=models.OutboxEvent.PENDING,
+        )
+
+
 class PosService(object):
 
     @staticmethod
@@ -46,7 +259,6 @@ class PosService(object):
         if session.status != models.PosSession.OPEN:
             raise ValidationError('Session is not open.')
 
-        tenant = models.Tenant.objects.get(id=tenant_id)
         sale = models.PosSale.objects.create(
             tenant_id=tenant_id,
             session=session,
@@ -67,26 +279,14 @@ class PosService(object):
             subtotal += quantity * unit_price
             tax_total += tax_amount
 
-            stock_level = models.StockLevel.objects.select_for_update().filter(
+            InventoryService.adjust_stock(
                 tenant_id=tenant_id,
                 warehouse_id=line['warehouse'],
                 product_id=line['product'],
-            ).first()
-            available_qty = stock_level.quantity if stock_level else Decimal('0.00')
-
-            if (not tenant.allow_negative_stock) and available_qty < quantity:
-                raise ValidationError('Insufficient stock for product %s' % line['product'])
-
-            if stock_level:
-                stock_level.quantity = stock_level.quantity - quantity
-                stock_level.save(update_fields=['quantity'])
-            else:
-                models.StockLevel.objects.create(
-                    tenant_id=tenant_id,
-                    warehouse_id=line['warehouse'],
-                    product_id=line['product'],
-                    quantity=Decimal('0.00') - quantity,
-                )
+                quantity_delta=Decimal('0.00') - quantity,
+                reference=sale.sale_number,
+                notes='POS checkout',
+            )
 
             models.PosSaleLine.objects.create(
                 tenant_id=tenant_id,
@@ -97,15 +297,6 @@ class PosService(object):
                 unit_price=unit_price,
                 tax_amount=tax_amount,
                 line_total=line_total,
-            )
-            models.StockMovement.objects.create(
-                tenant_id=tenant_id,
-                product_id=line['product'],
-                warehouse_id=line['warehouse'],
-                movement_type=models.StockMovement.OUT,
-                quantity=quantity,
-                reference=sale.sale_number,
-                notes='POS checkout',
             )
 
         payments_total = Decimal('0.00')
@@ -141,13 +332,12 @@ class PosService(object):
             status_code=201,
             response_payload=json.dumps(response_payload),
         )
-        models.OutboxEvent.objects.create(
+        OutboxService.record_event(
             tenant_id=tenant_id,
             aggregate_type='pos_sale',
-            aggregate_id=str(sale.id),
+            aggregate_id=sale.id,
             event_type='pos.sale.created',
-            payload=json.dumps(response_payload),
-            status=models.OutboxEvent.PENDING,
+            payload=response_payload,
         )
         return sale, False
 
@@ -162,26 +352,11 @@ class PosService(object):
             raise ValidationError('Refund exceeds sale amount.')
 
         for line in sale.lines.all():
-            stock_level = models.StockLevel.objects.select_for_update().filter(
+            InventoryService.adjust_stock(
                 tenant_id=tenant_id,
-                warehouse=line.warehouse,
-                product=line.product,
-            ).first()
-            if not stock_level:
-                stock_level = models.StockLevel.objects.create(
-                    tenant_id=tenant_id,
-                    warehouse=line.warehouse,
-                    product=line.product,
-                    quantity=Decimal('0.00'),
-                )
-            stock_level.quantity = stock_level.quantity + line.quantity
-            stock_level.save(update_fields=['quantity'])
-            models.StockMovement.objects.create(
-                tenant_id=tenant_id,
-                product=line.product,
-                warehouse=line.warehouse,
-                movement_type=models.StockMovement.IN,
-                quantity=line.quantity,
+                warehouse_id=line.warehouse_id,
+                product_id=line.product_id,
+                quantity_delta=line.quantity,
                 reference=sale.sale_number,
                 notes='POS refund',
             )
@@ -192,4 +367,12 @@ class PosService(object):
         else:
             sale.status = models.PosSale.REFUNDED_PARTIAL
         sale.save(update_fields=['refunded_amount', 'status'])
+
+        OutboxService.record_event(
+            tenant_id=tenant_id,
+            aggregate_type='pos_sale',
+            aggregate_id=sale.id,
+            event_type='pos.sale.refunded',
+            payload={'sale_id': sale.id, 'refund_amount': str(refund_amount)},
+        )
         return sale
