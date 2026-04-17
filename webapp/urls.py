@@ -26,9 +26,14 @@ router.register(r'accounts', views.AccountViewSet)
 router.register(r'journal-entries', views.JournalEntryViewSet)
 router.register(r'journal-lines', views.JournalLineViewSet)
 router.register(r'leads', views.LeadViewSet)
+router.register(r'pos-terminals', views.PosTerminalViewSet)
+router.register(r'pos-sessions', views.PosSessionViewSet)
+router.register(r'pos-sales', views.PosSaleViewSet)
 
 urlpatterns = [
     url(r'^admin/', admin.site.urls),
     url(r'^', include(router.urls)),
+    url(r'^pos/sessions/open/$', views.PosSessionOpenApi.as_view(), name='pos-session-open'),
+    url(r'^pos/sales/checkout/$', views.PosCheckoutApi.as_view(), name='pos-sale-checkout'),
     url(r'api-auth/', include('rest_framework.urls', namespace='rest_framework')),
 ]

@@ -127,3 +127,48 @@ class LeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Lead
         fields = '__all__'
+
+
+class IdempotencyKeySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.IdempotencyKey
+        fields = '__all__'
+
+
+class OutboxEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.OutboxEvent
+        fields = '__all__'
+
+
+class PosTerminalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PosTerminal
+        fields = '__all__'
+
+
+class PosSessionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PosSession
+        fields = '__all__'
+
+
+class PosSaleLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PosSaleLine
+        fields = '__all__'
+
+
+class PosPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PosPayment
+        fields = '__all__'
+
+
+class PosSaleSerializer(serializers.ModelSerializer):
+    lines = PosSaleLineSerializer(many=True, read_only=True)
+    payments = PosPaymentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = models.PosSale
+        fields = '__all__'

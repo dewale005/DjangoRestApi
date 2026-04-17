@@ -2,10 +2,14 @@
 from __future__ import unicode_literals
 
 from django.contrib.auth.models import User, Group
-from rest_framework import viewsets
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from webapp.api import models
 from webapp.api import serializers
+from webapp.api.services import PosService
 
 
 class TenantScopedViewSet(viewsets.ModelViewSet):
@@ -132,3 +136,58 @@ class JournalLineViewSet(TenantScopedViewSet):
 class LeadViewSet(TenantScopedViewSet):
     queryset = models.Lead.objects.all().order_by('-created_at')
     serializer_class = serializers.LeadSerializer
+
+
+class PosTerminalViewSet(TenantScopedViewSet):
+    queryset = models.PosTerminal.objects.all().order_by('name')
+    serializer_class = serializers.PosTerminalSerializer
+
+
+class PosSessionViewSet(TenantScopedViewSet):
+    queryset = models.PosSession.objects.all().order_by('-created_at')
+    serializer_class = serializers.PosSessionSerializer
+
+
+class PosSaleViewSet(TenantScopedViewSet):
+    queryset = models.PosSale.objects.all().order_by('-created_at')
+    serializer_class = serializers.PosSaleSerializer
+
+    @action(detail=True, methods=['post'])
+    def refund(self, request, pk=None):
+        tenant_id = request.query_params.get('tenant_id') or request.data.get('tenant')
+        if not tenant_id:
+            raise ValidationError('tenant_id is required.')
+        amount = request.data.get('amount')
+        sale = PosService.refund(tenant_id=tenant_id, sale_id=pk, amount=amount)
+        return Response(serializers.PosSaleSerializer(sale).data)
+
+
+class PosSessionOpenApi(APIView):
+    def post(self, request):
+        tenant_id = request.data.get('tenant')
+        terminal_id = request.data.get('terminal')
+        opening_float = request.data.get('opening_float', '0.00')
+        session = PosService.open_session(tenant_id=tenant_id, terminal_id=terminal_id, opening_float=opening_float)
+        return Response(serializers.PosSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class PosCheckoutApi(APIView):
+    def post(self, request):
+        tenant_id = request.data.get('tenant')
+        session_id = request.data.get('session')
+        idempotency_key = request.headers.get('Idempotency-Key') or request.data.get('idempotency_key')
+        lines = request.data.get('lines', [])
+        payments = request.data.get('payments', [])
+        customer_id = request.data.get('customer')
+
+        sale, is_duplicate = PosService.checkout(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            lines=lines,
+            payments=payments,
+            customer_id=customer_id,
+        )
+        response_data = serializers.PosSaleSerializer(sale).data
+        response_data['idempotent_replay'] = is_duplicate
+        return Response(response_data, status=status.HTTP_200_OK if is_duplicate else status.HTTP_201_CREATED)

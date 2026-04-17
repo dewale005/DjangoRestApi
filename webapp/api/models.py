@@ -16,6 +16,7 @@ class Tenant(TimeStampedModel):
     name = models.CharField(max_length=120, unique=True)
     code = models.CharField(max_length=30, unique=True)
     is_active = models.BooleanField(default=True)
+    allow_negative_stock = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
@@ -221,3 +222,114 @@ class Lead(TenantScopedModel):
     source = models.CharField(max_length=120, blank=True)
     expected_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     is_converted = models.BooleanField(default=False)
+
+class IdempotencyKey(TenantScopedModel):
+    key = models.CharField(max_length=120)
+    endpoint = models.CharField(max_length=120)
+    status_code = models.IntegerField(default=200)
+    response_payload = models.TextField(blank=True)
+
+    class Meta:
+        unique_together = ('tenant', 'key', 'endpoint')
+
+
+class OutboxEvent(TenantScopedModel):
+    PENDING = 'pending'
+    PUBLISHED = 'published'
+    FAILED = 'failed'
+    STATUS_CHOICES = ((PENDING, 'Pending'), (PUBLISHED, 'Published'), (FAILED, 'Failed'))
+
+    aggregate_type = models.CharField(max_length=60)
+    aggregate_id = models.CharField(max_length=64)
+    event_type = models.CharField(max_length=120)
+    payload = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=PENDING)
+    published_at = models.DateTimeField(null=True, blank=True)
+
+
+class PosTerminal(TenantScopedModel):
+    name = models.CharField(max_length=80)
+    store_name = models.CharField(max_length=120)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ('tenant', 'name')
+
+
+class PosSession(TenantScopedModel):
+    PENDING_OPEN = 'pending_open'
+    OPEN = 'open'
+    SUSPENDED = 'suspended'
+    CLOSING = 'closing'
+    CLOSED = 'closed'
+    RECONCILED = 'reconciled'
+    STATUS_CHOICES = (
+        (PENDING_OPEN, 'Pending Open'),
+        (OPEN, 'Open'),
+        (SUSPENDED, 'Suspended'),
+        (CLOSING, 'Closing'),
+        (CLOSED, 'Closed'),
+        (RECONCILED, 'Reconciled'),
+    )
+
+    terminal = models.ForeignKey(PosTerminal, on_delete=models.PROTECT, related_name='sessions')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=PENDING_OPEN)
+    opened_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    opening_float = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    closing_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+
+class PosSale(TenantScopedModel):
+    DRAFT_CART = 'draft_cart'
+    SUSPENDED = 'suspended'
+    FINALIZED = 'finalized'
+    PAID = 'paid'
+    REFUNDED_PARTIAL = 'refunded_partial'
+    REFUNDED_FULL = 'refunded_full'
+    CANCELLED = 'cancelled'
+    STATUS_CHOICES = (
+        (DRAFT_CART, 'Draft Cart'),
+        (SUSPENDED, 'Suspended'),
+        (FINALIZED, 'Finalized'),
+        (PAID, 'Paid'),
+        (REFUNDED_PARTIAL, 'Refunded Partial'),
+        (REFUNDED_FULL, 'Refunded Full'),
+        (CANCELLED, 'Cancelled'),
+    )
+
+    sale_number = models.CharField(max_length=64)
+    session = models.ForeignKey(PosSession, on_delete=models.PROTECT, related_name='sales')
+    customer = models.ForeignKey(Partner, null=True, blank=True, on_delete=models.PROTECT)
+    idempotency_key = models.CharField(max_length=120)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=PAID)
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    refunded_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    class Meta:
+        unique_together = (('tenant', 'sale_number'), ('tenant', 'idempotency_key'))
+
+
+class PosSaleLine(TenantScopedModel):
+    sale = models.ForeignKey(PosSale, on_delete=models.CASCADE, related_name='lines')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT)
+    quantity = models.DecimalField(max_digits=12, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    line_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+
+class PosPayment(TenantScopedModel):
+    CASH = 'cash'
+    CARD = 'card'
+    TRANSFER = 'transfer'
+    METHOD_CHOICES = ((CASH, 'Cash'), (CARD, 'Card'), (TRANSFER, 'Transfer'))
+
+    sale = models.ForeignKey(PosSale, on_delete=models.CASCADE, related_name='payments')
+    payment_method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reference = models.CharField(max_length=120, blank=True)

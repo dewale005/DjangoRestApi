@@ -72,3 +72,14 @@ A production-ready ERP + POS architecture and scaffold has been added:
 - Testing strategy: `docs/architecture/testing_strategy.md`
 - Deployment runbook: `docs/runbooks/deployment.md`
 - Delivery roadmap: `docs/architecture/roadmap.md`
+
+
+## Working POS APIs
+
+- Open POS session: `POST /pos/sessions/open/`
+- Checkout sale: `POST /pos/sales/checkout/`
+- Refund sale: `POST /pos-sales/{sale_id}/refund/?tenant_id={tenant_id}`
+
+Checkout is idempotent using `idempotency_key` payload field (or `Idempotency-Key` header),
+creates stock movements, updates stock levels with row locking, records payments,
+and creates outbox events for async processing.
