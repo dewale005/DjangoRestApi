@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erp-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: erp-worker}
+  template:
+    metadata:
+      labels: {app: erp-worker}
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/org/erp-worker:latest
