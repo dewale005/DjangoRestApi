@@ -1,0 +1,30 @@
+name: ERP Monorepo CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt black ruff mypy bandit pip-audit pytest pytest-django
+      - run: black --check .
+      - run: ruff check .
+      - run: mypy django_apps services
+      - run: bandit -r django_apps services
+      - run: pip-audit
+      - run: pytest -m "unit or integration" tests/
+
+  build-and-deploy-staging:
+    if: github.ref == 'refs/heads/main'
+    needs: lint-type-test
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Build and deploy to staging (scaffold)"
