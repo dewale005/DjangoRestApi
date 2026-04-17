@@ -52,11 +52,3 @@ python manage.py makemigrations api
 python manage.py migrate
 python manage.py runserver
 ```
-
-
-## DevOps / CI-CD
-
-- CI workflow: `.github/workflows/ci.yml`
-- CD workflow: `.github/workflows/cd.yml`
-- Kubernetes manifests: `deploy/k8s/`
-- Full deployment guide: `DEVOPS.md`
