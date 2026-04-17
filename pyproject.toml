@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "I", "UP", "B", "DJ"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "apps.api.settings.test"
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-q --strict-markers --disable-warnings"

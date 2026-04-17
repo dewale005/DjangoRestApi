@@ -52,3 +52,23 @@ python manage.py makemigrations api
 python manage.py migrate
 python manage.py runserver
 ```
+
+
+## DevOps / CI-CD
+
+- CI workflow: `.github/workflows/ci.yml`
+- CD workflow: `.github/workflows/cd.yml`
+- Kubernetes manifests: `deploy/k8s/`
+- Full deployment guide: `DEVOPS.md`
+
+
+## ERP/POS Monorepo Blueprint
+
+A production-ready ERP + POS architecture and scaffold has been added:
+- Architecture blueprint: `docs/architecture/erp_pos_blueprint.md`
+- Monorepo boundaries: `docs/architecture/monorepo_structure.md`
+- Schema catalog: `docs/architecture/schema_catalog.md`
+- API contracts: `docs/api/endpoints.md`
+- Testing strategy: `docs/architecture/testing_strategy.md`
+- Deployment runbook: `docs/runbooks/deployment.md`
+- Delivery roadmap: `docs/architecture/roadmap.md`
